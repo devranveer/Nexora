@@ -1,11 +1,3 @@
-fastapi and uvicorn: the web server
-pydantic: data validation
-python-dotenv: reads your .env file
-supabase: database and auth client
-python-multipart: file uploads (resumes, PDFs)
-pymupdf: reads PDFs and turns pages into images
-python-docx: reads DOCX resumes
-google-genai: calls Gemma 4
 
 fastapi
 uvicorn[standard]
@@ -16,7 +8,5 @@ python-multipart
 pymupdf
 python-docx
 google-genai
-EOF
-
 psycopg[binary]
 sqlalchemy
