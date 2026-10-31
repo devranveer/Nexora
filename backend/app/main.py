@@ -50,3 +50,6 @@ app.include_router(ai_router)
 app.include_router(opportunities_router)
 app.include_router(matching_router)
 app.include_router(calendar_router)
+
+from app.routes.pdf import router as pdf_router
+app.include_router(pdf_router)
