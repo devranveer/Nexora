@@ -8,6 +8,17 @@ import {
   useParams,
 } from "react-router-dom";
 
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Link,
+  NavLink,
+  Route,
+  Routes,
+  useParams,
+} from "react-router-dom";
+
+import Calendar from "./Calendar";
+import PdfUpload from "./PdfUpload.jsx";
 import Calendar from "./Calendar";
 import {
   opportunities,
@@ -105,6 +116,12 @@ function Sidebar() {
     ["/upload-pdf", "⇧", "Import PDF"],
     ["/profile", "◉", "My profile"],
   ];
+  {nav.map(([path, icon, label]) => (
+  <NavLink key={path} to={path}>
+    <span>{icon}</span>
+    <span>{label}</span>
+  </NavLink>
+))}
 
   return (
     <aside className="sidebar">
@@ -834,12 +851,19 @@ export default function App() {
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/opportunities" element={<OpportunityPage />} />
       <Route path="/calendar" element={<CalendarPage />} />
+
+      {/* PDF upload route */}
+      <Route
+        path="/upload-pdf"
+        element={
+          <Shell>
+            <PdfUpload />
+          </Shell>
+        }
+      />
+
       <Route path="/opportunity/:id" element={<Detail />} />
       <Route path="/saved" element={<Saved />} />
-
-      {/* ADD THIS LINE */}
-      <Route path="/upload-pdf" element={<PdfUploadPage />} />
-
       <Route path="/profile" element={<Profile />} />
       <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/login" element={<Auth />} />
@@ -848,7 +872,6 @@ export default function App() {
     </Routes>
   );
 }
-
 
 function PdfUploadPage() {
   const [file, setFile] = useState(null);
