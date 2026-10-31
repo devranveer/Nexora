@@ -83,15 +83,72 @@ export async function apiRequest(path, options = {}, retries = 1) {
   }
 }
 
-// Get all opportunities.
-export async function getOpportunities() {
-  const result = await apiRequest("/opportunities/");
+// Get all opportunities (up to 100 live rows).
+export async function getOpportunities(limit = 100) {
+  const result = await apiRequest(`/opportunities/?limit=${limit}`);
   return result.opportunities || [];
 }
 
 // Get one opportunity by ID.
 export async function getOpportunityById(opportunityId) {
   return apiRequest(`/opportunities/${opportunityId}`);
+}
+
+// Append a new opportunity to the database.
+export async function appendOpportunity(data) {
+  return apiRequest(
+    "/opportunities/",
+    {
+      method: "POST",
+      body: JSON.stringify(data),
+    },
+    0
+  );
+}
+
+// Scrape real opportunities (Remotive, Arbeitnow, Devpost).
+export async function runScraper(target = 100) {
+  return apiRequest(
+    `/scraper/run?target=${target}`,
+    { method: "POST" },
+    0
+  );
+}
+
+// How much real data is currently in the database.
+export async function getScraperStatus() {
+  return apiRequest("/scraper/status");
+}
+
+// Send the student's profile to the eligibility matcher and
+// receive per-opportunity match results.
+export async function checkEligibility(payload) {
+  return apiRequest(
+    "/matching/opportunities",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    0
+  );
+}
+
+// Load the current student profile (created on first load).
+export async function getMyProfile() {
+  const result = await apiRequest("/profile/me");
+  return result.profile || {};
+}
+
+// Create or update the student profile.
+export async function saveMyProfile(payload) {
+  return apiRequest(
+    "/profile/me",
+    {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    },
+    0
+  );
 }
 
 // Upload a PDF for AI extraction.
@@ -119,17 +176,3 @@ export async function uploadOpportunityPdf(file) {
 
 // Export the configured backend URL.
 export { API_BASE };
-
-export async function uploadOpportunityPdf(file) {
-  const formData = new FormData();
-  formData.append("file", file);
-
-  return apiRequest(
-    "/ai/extract-pdf",
-    {
-      method: "POST",
-      body: formData,
-    },
-    0
-  );
-}

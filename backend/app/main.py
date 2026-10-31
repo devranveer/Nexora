@@ -10,6 +10,8 @@ from app.routes.ai import router as ai_router
 from app.routes.opportunities import router as opportunities_router
 from app.routes.matching import router as matching_router
 from app.routes.calendar import router as calendar_router
+from app.routes.profile import router as profile_router
+from app.routes.scraper import router as scraper_router
 
 # 1. Initialize FastAPI app once
 app = FastAPI(title="Aventra API")
@@ -50,6 +52,8 @@ app.include_router(ai_router)
 app.include_router(opportunities_router)
 app.include_router(matching_router)
 app.include_router(calendar_router)
+app.include_router(profile_router)
+app.include_router(scraper_router)
 
 from app.routes.pdf import router as pdf_router
 app.include_router(pdf_router)

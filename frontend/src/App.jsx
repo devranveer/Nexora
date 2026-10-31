@@ -8,18 +8,9 @@ import {
   useParams,
 } from "react-router-dom";
 
-import React, { useEffect, useMemo, useState } from "react";
-import {
-  Link,
-  NavLink,
-  Route,
-  Routes,
-  useParams,
-} from "react-router-dom";
-
 import Calendar from "./Calendar";
 import PdfUpload from "./PdfUpload.jsx";
-import Calendar from "./Calendar";
+import EligibilityChecker from "./EligibilityChecker.jsx";
 import {
   opportunities,
   categories,
@@ -27,7 +18,14 @@ import {
   setSaved,
 } from "./data.js";
 
-import { getOpportunities } from "./api.js";
+import {
+  getOpportunities,
+  appendOpportunity,
+  runScraper,
+  getScraperStatus,
+  getMyProfile,
+  saveMyProfile,
+} from "./api.js";
 
 // Convert backend data into the format used by the Nexora UI.
 function normalizeOpportunity(item) {
@@ -36,6 +34,9 @@ function normalizeOpportunity(item) {
     internship: "Internship",
     hackathon: "Hackathon",
     course: "Course",
+    job: "Job",
+    fellowship: "Fellowship",
+    other: "Other",
   };
 
   const category =
@@ -46,64 +47,351 @@ function normalizeOpportunity(item) {
   const match = url.match(/^\[.*?\]\((https?:\/\/.*?)\)$/);
   if (match) url = match[1];
 
+  // Show a human amount when the backend knows the pay.
+  let amount = "See official listing";
+  if (item.stipend_monthly) {
+    amount = `${Number(item.stipend_monthly).toLocaleString()} / mo`;
+  } else if (item.salary_annual) {
+    amount = `${Number(item.salary_annual).toLocaleString()} / yr`;
+  }
+
+  const iconMap = {
+    Scholarship: "🎓",
+    Internship: "💻",
+    Hackathon: "🚀",
+    Course: "🧠",
+    Job: "💼",
+    Fellowship: "🎓",
+    Other: "✨",
+  };
+
+  const skills = Array.isArray(item.required_skills)
+    ? item.required_skills.slice(0, 6)
+    : [];
+
   return {
     id: String(item.id),
     title: item.title || "Untitled opportunity",
     org: item.organization || "Organization not specified",
     category,
-    icon:
-      category === "Scholarship"
-        ? "🎓"
-        : category === "Internship"
-          ? "💻"
-          : category === "Hackathon"
-            ? "🚀"
-            : category === "Course"
-              ? "🧠"
-              : "✨",
+    icon: iconMap[category] || "✨",
     type: category,
-    amount: "See official listing",
-    location: "See listing details",
+    amount,
+    location: item.location || item.work_mode || "See listing details",
     deadline: item.deadline || "Not specified",
-    level: "Check eligibility",
-    description: item.description || "No description available.",
-    tags: [category, ...(item.eligibility?.eligible_courses || [])],
+    level: item.work_mode
+      ? String(item.work_mode).replace(/\b\w/g, (c) => c.toUpperCase())
+      : "Check eligibility",
+    description:
+      item.description
+        ? String(item.description).slice(0, 320) +
+          (String(item.description).length > 320 ? "..." : "")
+        : "No description available.",
+    tags: [category, ...skills.filter(Boolean)],
     url,
     verified: item.verified ?? false,
   };
 }
 
 // Fetch live opportunities from FastAPI.
-function useOpportunities() {
+function useOpportunities(limit = 100) {
   const [items, setItems] = useState(opportunities);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
+  const load = React.useCallback(
+    (isCancelled) => {
+      setLoading(true);
 
-    getOpportunities()
-      .then((data) => {
-        if (!cancelled) {
-          setItems(data.map(normalizeOpportunity));
-          setError("");
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err.message || "Could not connect to the backend.");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      return getOpportunities(limit)
+        .then((data) => {
+          if (!isCancelled()) {
+            setItems(data.map(normalizeOpportunity));
+            setError("");
+          }
+        })
+        .catch((err) => {
+          if (!isCancelled()) {
+            setError(err.message || "Could not connect to the backend.");
+          }
+        })
+        .finally(() => {
+          if (!isCancelled()) setLoading(false);
+        });
+    },
+    [limit]
+  );
+
+  useEffect(() => {
+    let active = true;
+    const isCancelled = () => !active;
+
+    load(isCancelled);
 
     return () => {
-      cancelled = true;
+      active = false;
     };
-  }, []);
+  }, [load]);
 
-  return { items, loading, error };
+  return {
+    items,
+    setItems,
+    loading,
+    error,
+    refresh: () => {
+      let active = true;
+      return load(() => !active).finally(() => {
+        active = true;
+      });
+    },
+  };
+}
+
+// ------------------------------------------------------------
+// Sync real data + Add opportunity (append) toolbar
+// ------------------------------------------------------------
+
+function OpportunityToolbar({ items, setItems, refresh }) {
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncError, setSyncError] = useState("");
+  const [showAddForm, setShowAddForm] = useState(false);
+
+  async function syncRealData() {
+    setSyncing(true);
+    setSyncResult(null);
+    setSyncError("");
+
+    try {
+      const result = await runScraper(100);
+      setSyncResult(result);
+      await refresh();
+    } catch (err) {
+      setSyncError(
+        err.message || "Scraping failed. Is the backend running?"
+      );
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <section className="panel" style={{ marginTop: 18 }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 14,
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <div>
+          <h2 style={{ fontSize: 18 }}>Live data</h2>
+          <p className="panel-sub">
+            {items.length} opportunities loaded. Fill the feed with real
+            listings or add one by hand.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={syncRealData}
+            disabled={syncing}
+          >
+            {syncing
+              ? "Scraping real listings..."
+              : "⚡ Import 100 real opportunities"}
+          </button>
+
+          <button
+            type="button"
+            className={`btn ${showAddForm ? "btn-primary" : "btn-light"}`}
+            onClick={() => setShowAddForm((open) => !open)}
+          >
+            {showAddForm ? "Close" : "+ Add opportunity"}
+          </button>
+        </div>
+      </div>
+
+      {syncResult && (
+        <div className="notice" style={{ marginTop: 14 }}>
+          Appended {syncResult.collected} new opportunities
+          {syncResult.by_source
+            ? Object.entries(syncResult.by_source).map(
+                ([source, count]) => ` · ${source}: ${count}`
+              ).join("")
+            : ""}. Database now holds{" "}
+          {syncResult.total_opportunities_in_db}.
+        </div>
+      )}
+
+      {syncError && (
+        <div className="notice" role="alert" style={{ marginTop: 14 }}>
+          {syncError}
+        </div>
+      )}
+
+      {showAddForm && (
+        <AddOpportunityForm
+          onAppended={(record) => {
+            setItems((previous) => [record, ...previous]);
+            setShowAddForm(false);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+// ------------------------------------------------------------
+// "Add opportunity" form — appends a row via POST /opportunities
+// ------------------------------------------------------------
+
+function AddOpportunityForm({ onAppended }) {
+  const emptyForm = {
+    title: "",
+    category: "Internship",
+    organization: "",
+    description: "",
+    location: "",
+    work_mode: "",
+    deadline: "",
+    stipend_monthly: "",
+    salary_annual: "",
+    source_url: "",
+    skills: "",
+  };
+
+  const [form, setForm] = useState(emptyForm);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const categoryMap = {
+    Scholarship: "scholarship",
+    Internship: "internship",
+    Hackathon: "hackathon",
+    Course: "course",
+    Job: "job",
+    Fellowship: "fellowship",
+    Other: "other",
+  };
+
+  function change(e) {
+    setForm({ ...form, [e.target.name]: e.target.value });
+  }
+
+  function toNumberOrUndefined(value) {
+    const parsed = Number(String(value).replace(/[^\d.]/g, ""));
+    return Number.isFinite(parsed) && value !== "" ? parsed : undefined;
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    setError("");
+
+    if (form.title.trim().length < 3) {
+      setError("Give the opportunity a title (at least 3 characters).");
+      return;
+    }
+
+    const payload = {
+      title: form.title.trim(),
+      category: categoryMap[form.category] || "other",
+      organization: form.organization.trim() || null,
+      description: form.description.trim() || null,
+      location: form.location.trim() || null,
+      work_mode: form.work_mode.trim() || null,
+      deadline: form.deadline.trim() || null,
+      stipend_monthly: toNumberOrUndefined(form.stipend_monthly),
+      salary_annual: toNumberOrUndefined(form.salary_annual),
+      source_url: form.source_url.trim() || null,
+      required_skills: form.skills
+        ? form.skills.split(",").map((s) => s.trim()).filter(Boolean)
+        : [],
+    };
+
+    setSaving(true);
+
+    try {
+      const result = await appendOpportunity(payload);
+      onAppended(
+        normalizeOpportunity(result.opportunity || result)
+      );
+      setForm(emptyForm);
+    } catch (err) {
+      setError(err.message || "Could not save this opportunity.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} style={{ marginTop: 16 }}>
+      <div className="form-grid">
+        <Field label="Title *">
+          <input name="title" value={form.title} onChange={change} placeholder="e.g. Summer AI Intern" required />
+        </Field>
+        <Field label="Category">
+          <select name="category" value={form.category} onChange={change}>
+            {["Internship", "Scholarship", "Hackathon", "Course", "Job", "Fellowship", "Other"].map(
+              (option) => <option key={option}>{option}</option>
+            )}
+          </select>
+        </Field>
+        <Field label="Organization">
+          <input name="organization" value={form.organization} onChange={change} placeholder="Company / university" />
+        </Field>
+        <Field label="Location">
+          <input name="location" value={form.location} onChange={change} placeholder="Remote · India" />
+        </Field>
+        <Field label="Work mode">
+          <select name="work_mode" value={form.work_mode} onChange={change}>
+            <option value="">Not specified</option>
+            <option>remote</option>
+            <option>hybrid</option>
+            <option>onsite</option>
+          </select>
+        </Field>
+        <Field label="Deadline (YYYY-MM-DD)">
+          <input name="deadline" value={form.deadline} onChange={change} placeholder="2026-12-31" />
+        </Field>
+        <Field label="Monthly stipend">
+          <input name="stipend_monthly" value={form.stipend_monthly} onChange={change} placeholder="e.g. 15000" />
+        </Field>
+        <Field label="Annual salary">
+          <input name="salary_annual" value={form.salary_annual} onChange={change} placeholder="e.g. 600000" />
+        </Field>
+        <Field label="Source URL">
+          <input name="source_url" value={form.source_url} onChange={change} placeholder="https://..." />
+        </Field>
+        <Field label="Skills (comma-separated)">
+          <input name="skills" value={form.skills} onChange={change} placeholder="Python, SQL, AI" />
+        </Field>
+        <Field label="Description" full>
+          <textarea
+            name="description"
+            value={form.description}
+            onChange={change}
+            placeholder="A short summary of the opportunity and how to apply."
+            rows={3}
+          />
+        </Field>
+      </div>
+
+      {error && (
+        <div className="notice" role="alert" style={{ marginTop: 12 }}>
+          {error}
+        </div>
+      )}
+
+      <button className="btn btn-primary" type="submit" disabled={saving} style={{ marginTop: 12 }}>
+        {saving ? "Appending..." : "Append to opportunities"}
+      </button>
+    </form>
+  );
 }
 
 // Sidebar navigation.
@@ -111,17 +399,12 @@ function Sidebar() {
   const nav = [
     ["/dashboard", "▦", "Dashboard"],
     ["/opportunities", "⌕", "Explore opportunities"],
+    ["/eligibility", "✓", "Eligibility check"],
     ["/saved", "♡", "Saved"],
     ["/calendar", "▦", "Calendar"],
     ["/upload-pdf", "⇧", "Import PDF"],
     ["/profile", "◉", "My profile"],
   ];
-  {nav.map(([path, icon, label]) => (
-  <NavLink key={path} to={path}>
-    <span>{icon}</span>
-    <span>{label}</span>
-  </NavLink>
-))}
 
   return (
     <aside className="sidebar">
@@ -189,6 +472,14 @@ function CalendarPage() {
   );
 }
 
+function EligibilityPage() {
+  return (
+    <Shell>
+      <EligibilityChecker />
+    </Shell>
+  );
+}
+
 function OpportunityCard({ item }) {
   const [saved, setSavedState] = useState(() =>
     getSaved().some((id) => String(id) === String(item.id))
@@ -236,6 +527,7 @@ function OpportunityCard({ item }) {
 
       <div className="tag-row">
         <span className={`pill ${tone}`}>{item.category}</span>
+        {item.verified && <span className="pill green">✓ Verified</span>}
       </div>
 
       <p className="card-desc">{item.description}</p>
@@ -259,6 +551,7 @@ function Explorer({
   items = opportunities,
   title = "Explore opportunities",
   subtitle = "Find scholarships, internships, hackathons and learning resources.",
+  toolbar = null,
 }) {
   const [category, setCategory] = useState("All");
   const [query, setQuery] = useState("");
@@ -315,6 +608,8 @@ function Explorer({
         ))}
       </div>
 
+      {toolbar}
+
       <div className="section-head">
         <div>
           <h2>{filtered.length} opportunities</h2>
@@ -344,13 +639,13 @@ function Explorer({
 }
 
 function Dashboard() {
-  const { items, loading, error } = useOpportunities();
+  const { items, loading, error, refresh } = useOpportunities();
 
   const counts = [
     ["Scholarships", "🏛️", items.filter((o) => o.category === "Scholarship").length, "Explore funding"],
     ["Internships", "💻", items.filter((o) => o.category === "Internship").length, "Build experience"],
     ["Hackathons", "🚀", items.filter((o) => o.category === "Hackathon").length, "Build with a team"],
-    ["Courses", "🧠", items.filter((o) => o.category === "Course").length, "Keep learning"],
+    ["Open jobs", "💼", items.filter((o) => o.category === "Job").length, "Apply directly"],
   ];
 
   return (
@@ -374,6 +669,13 @@ function Dashboard() {
       {error && (
         <div className="notice">
           API connection failed: {error}. Showing available fallback data.
+          <button
+            className="btn btn-light"
+            style={{ marginLeft: 10 }}
+            onClick={refresh}
+          >
+            Retry ↻
+          </button>
         </div>
       )}
 
@@ -391,8 +693,8 @@ function Dashboard() {
         </div>
 
         <div className="hero-stat">
-          <strong>4</strong>
-          <span>categories to explore</span>
+          <strong>{items.length}</strong>
+          <span>live opportunities loaded</span>
         </div>
       </section>
 
@@ -429,7 +731,7 @@ function Dashboard() {
         !loading && (
           <div className="empty">
             <strong>No opportunities found</strong>
-            Add opportunities through your backend API.
+            Open the explore page and import real opportunities.
           </div>
         )
       )}
@@ -441,24 +743,10 @@ function Dashboard() {
             A few details can help you assess eligibility faster.
           </p>
 
-          {[
-            ["Education details", 35],
-            ["Skills and interests", 60],
-            ["Career preferences", 25],
-          ].map(([name, p]) => (
-            <div className="progress-row" key={name}>
-              <div className="progress-label">
-                <span>{name}</span>
-                <strong>{p}%</strong>
-              </div>
-              <div className="progress-track">
-                <div className="progress-fill" style={{ width: `${p}%` }} />
-              </div>
-            </div>
-          ))}
+          <ProfileMeter />
 
-          <Link to="/onboarding" className="btn btn-primary">
-            Complete preferences →
+          <Link to="/profile" className="btn btn-primary">
+            Complete profile →
           </Link>
         </section>
 
@@ -471,6 +759,45 @@ function Dashboard() {
         </section>
       </div>
     </Shell>
+  );
+}
+
+function ProfileMeter() {
+  const [state, setState] = useState({ percent: 0, loaded: false });
+
+  useEffect(() => {
+    getMyProfile()
+      .then((profile) => {
+        const fields = [
+          profile.degree,
+          profile.year_of_study,
+          (profile.skills || []).length,
+          (profile.interests || []).length,
+          profile.marks_percentage > 0,
+          profile.preferred_location,
+        ];
+        const filled = fields.filter(Boolean).length;
+        setState({
+          percent: Math.round((filled / fields.length) * 100),
+          loaded: true,
+        });
+      })
+      .catch(() => {})
+      .finally(() => setState((s) => ({ ...s, loaded: true })));
+  }, []);
+
+  const percent = state.loaded ? Math.max(state.percent, 35) : 35;
+
+  return (
+    <div className="progress-row" key="profile">
+      <div className="progress-label">
+        <span>Profile completeness</span>
+        <strong>{percent}%</strong>
+      </div>
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
   );
 }
 
@@ -487,13 +814,24 @@ function Activity({ icon, title, text }) {
 }
 
 function OpportunityPage() {
-  const { items, loading, error } = useOpportunities();
+  const { items, setItems, loading, error, refresh } = useOpportunities();
 
   return (
     <Shell>
       {loading && <p>Loading opportunities...</p>}
       {error && <div className="notice">API error: {error}</div>}
-      <Explorer items={items} />
+      <Explorer
+        items={items}
+        title="Explore opportunities"
+        subtitle="Real listings synced from public sources, plus anything you add."
+        toolbar={
+          <OpportunityToolbar
+            items={items}
+            setItems={setItems}
+            refresh={refresh}
+          />
+        }
+      />
     </Shell>
   );
 }
@@ -555,6 +893,11 @@ function Detail() {
           <h3>About this opportunity</h3>
           <p className="detail-body">{item.description}</p>
 
+          <h3>Required skills</h3>
+          <p className="detail-body">
+            {item.tags.length > 1 ? item.tags.slice(1).join(", ") : "Not specified"}
+          </p>
+
           <h3>Before you apply</h3>
           <ul className="detail-body">
             <li>Read the current official notification carefully.</li>
@@ -580,7 +923,7 @@ function Detail() {
           <h3>Quick information</h3>
           <p className="panel-sub">Use this as a checklist.</p>
           <Activity icon="⌖" title="Location" text={item.location} />
-          <Activity icon="◉" title="Level" text={item.level} />
+          <Activity icon="◉" title="Work mode" text={item.level} />
           <Activity icon="⌁" title="Tags" text={item.tags.join(", ")} />
         </aside>
       </div>
@@ -639,36 +982,133 @@ function Saved() {
   );
 }
 
+// ------------------------------------------------------------
+// Profile — connected to the backend with a local fallback
+// ------------------------------------------------------------
+
+function initials(name) {
+  if (!name || !name.trim()) return "◆";
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0].toUpperCase())
+    .join("");
+}
+
 function Profile() {
-  const [profile, setProfile] = useState(() => {
-    const defaults = {
-      name: "Ranveer Kumar",
-      email: "",
-      college: "",
-      degree: "B.Tech",
-      year: "1st Year",
-      interests: "Python, AI/ML, backend development",
-      location: "India",
-    };
+  const defaults = {
+    name: "Ranveer Kumar",
+    email: "",
+    college: "",
+    degree: "B.Tech",
+    year: "1st Year",
+    interests: "Python, AI/ML, backend development",
+    location: "India",
+    work_mode: "Any",
+    marks: "",
+  };
 
-    try {
-      return { ...defaults, ...JSON.parse(localStorage.getItem("nexora_profile") || "{}") };
-    } catch {
-      return defaults;
-    }
-  });
-
+  const [profile, setProfile] = useState(defaults);
   const [message, setMessage] = useState("");
+  const [isError, setIsError] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [serverLinked, setServerLinked] = useState(false);
+
+  // Load: try the backend first, fall back to local storage.
+  useEffect(() => {
+    let local = defaults;
+    try {
+      local = {
+        ...defaults,
+        ...JSON.parse(localStorage.getItem("nexora_profile") || "{}"),
+      };
+    } catch { /* keep defaults */ }
+
+    setProfile(local);
+
+    getMyProfile()
+      .then((saved) => {
+        setProfile((previous) => ({
+          ...previous,
+          degree: saved.degree || previous.degree,
+          year: saved.year_of_study || previous.year,
+          location: saved.preferred_location || previous.location,
+          work_mode:
+            saved.preferred_work_mode
+              ? saved.preferred_work_mode.replace(
+                  /^\w/,
+                  (c) => c.toUpperCase()
+                )
+              : previous.work_mode,
+          marks: saved.marks_percentage
+            ? String(saved.marks_percentage)
+            : previous.marks,
+          interests: (saved.interests || []).join(", ") || previous.interests,
+        }));
+        setServerLinked(true);
+      })
+      .catch(() => setServerLinked(false))
+      .finally(() => setLoading(false));
+  }, []);
 
   function change(e) {
     setProfile({ ...profile, [e.target.name]: e.target.value });
+    setMessage("");
   }
 
-  function save(e) {
-    e.preventDefault();
-    localStorage.setItem("nexora_profile", JSON.stringify(profile));
-    setMessage("Profile saved in this browser.");
+  async function save(event) {
+    event.preventDefault();
+    setMessage("");
+    setIsError(false);
+
+    try {
+      localStorage.setItem("nexora_profile", JSON.stringify(profile));
+    } catch { /* storage may be unavailable */ }
+
+    try {
+      await saveMyProfile({
+        degree: profile.degree,
+        course: profile.degree,
+        year_of_study: profile.year,
+        preferred_location: profile.location,
+        preferred_work_mode: profile.work_mode.toLowerCase(),
+        marks_percentage: profile.marks ? Number(profile.marks) : undefined,
+        interests: profile.interests
+          ? profile.interests.split(",").map((s) => s.trim()).filter(Boolean)
+          : [],
+        skills: (profile.interests || "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .slice(0, 6),
+      });
+      setServerLinked(true);
+      setMessage(serverLinked
+        ? "Profile saved to your Nexora account and this browser."
+        : "Profile saved. Saved locally — the backend profile is ready once the API is reachable.");
+    } catch (err) {
+      setIsError(false);
+      setMessage(
+        "Profile saved in this browser only. Backend says: " +
+          (err.message || "unreachable")
+      );
+    }
   }
+
+  const chips = [
+    profile.degree,
+    profile.year,
+    profile.work_mode !== "Any" ? profile.work_mode : null,
+    profile.location,
+  ].filter(Boolean);
+
+  const complete = [
+    profile.name, profile.email, profile.college, profile.degree,
+    profile.year, profile.interests, profile.location, profile.marks,
+  ].filter((value) => value && value.trim()).length;
+
+  const completeness = Math.round((complete / 8) * 100);
 
   return (
     <Shell>
@@ -676,21 +1116,49 @@ function Profile() {
         <div>
           <div className="eyebrow">YOUR DETAILS</div>
           <h1 className="h1">My profile</h1>
-          <p className="subtitle">Keep your education and interests ready for opportunity matching.</p>
+          <p className="subtitle">
+            Keep your education and interests ready for opportunity matching.
+          </p>
         </div>
       </div>
 
       <div className="form-wrap">
         <form className="form-panel" onSubmit={save}>
           <div className="org profile-intro">
-            <div className="avatar profile-avatar">R</div>
+            <div className="avatar profile-avatar">{initials(profile.name)}</div>
             <div>
-              <h2 className="form-title">Student profile</h2>
-              <span className="muted small-text">Saved locally in your browser</span>
+              <h2 className="form-title">{profile.name || "Student profile"}</h2>
+              <span className="muted small-text">
+                {serverLinked
+                  ? "Linked to your Nexora backend account"
+                  : "Saved locally — connect the backend to sync"}
+              </span>
             </div>
           </div>
 
-          {message && <div className="toast">{message}</div>}
+          <div className="card-facts" style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "4px 0 8px" }}>
+            {chips.map((chip) => (
+              <span className="pill" key={chip}>{chip}</span>
+            ))}
+          </div>
+
+          <div className="progress-row">
+            <div className="progress-label">
+              <span>Profile completeness</span>
+              <strong>{completeness}%</strong>
+            </div>
+            <div className="progress-track">
+              <div className="progress-fill" style={{ width: `${completeness}%` }} />
+            </div>
+          </div>
+
+          {loading && <p className="muted small-text">Loading saved profile...</p>}
+
+          {message && (
+            <div className={`${isError || message.startsWith("Profile saved in") ? "notice" : "toast"}`}>
+              {message}
+            </div>
+          )}
 
           <div className="form-grid">
             <Field label="Full name"><input name="name" value={profile.name} onChange={change} /></Field>
@@ -698,7 +1166,7 @@ function Profile() {
             <Field label="College / university"><input name="college" value={profile.college} onChange={change} placeholder="Your college" /></Field>
             <Field label="Degree">
               <select name="degree" value={profile.degree} onChange={change}>
-                <option>B.Tech</option><option>B.E.</option><option>B.Sc.</option><option>BCA</option><option>Diploma</option><option>Other</option>
+                <option>B.Tech</option><option>B.E.</option><option>B.Sc.</option><option>BCA</option><option>MBA</option><option>Diploma</option><option>Other</option>
               </select>
             </Field>
             <Field label="Study year">
@@ -706,12 +1174,23 @@ function Profile() {
                 <option>1st Year</option><option>2nd Year</option><option>3rd Year</option><option>4th Year</option><option>Graduate</option>
               </select>
             </Field>
+            <Field label="Marks (%)"><input name="marks" value={profile.marks} onChange={change} placeholder="e.g. 78" inputMode="decimal" /></Field>
             <Field label="Location / domicile"><input name="location" value={profile.location} onChange={change} /></Field>
+            <Field label="Preferred work mode">
+              <select name="work_mode" value={profile.work_mode} onChange={change}>
+                <option>Any</option><option>Remote</option><option>Hybrid</option><option>On-site</option>
+              </select>
+            </Field>
             <Field label="Interests and skills" full><textarea name="interests" value={profile.interests} onChange={change} /></Field>
           </div>
 
-          <div className="notice">Profile details are stored in your browser. They are not yet connected to your FastAPI database.</div>
-          <button className="btn btn-primary" type="submit">Save profile</button>
+          <div className="notice">
+            Degree, year, marks, work mode and skills are stored in your Nexora
+            account via the API. Name, email and college stay in this browser for now.
+          </div>
+          <button className="btn btn-primary" type="submit">
+            Save profile
+          </button>
         </form>
       </div>
     </Shell>
@@ -770,7 +1249,7 @@ function Onboarding() {
           <h2 className="form-title">What should we help you find?</h2>
           <p className="panel-sub">Choose all categories you care about.</p>
 
-          {["Scholarship", "Internship", "Hackathon", "Course"].map((value) => (
+          {["Scholarship", "Internship", "Job", "Hackathon", "Course"].map((value) => (
             <label className="check-row" key={value}>
               <input type="checkbox" checked={form.interests.includes(value)} onChange={() => toggle(value)} />
               {value}
@@ -850,6 +1329,7 @@ export default function App() {
       <Route path="/" element={<Dashboard />} />
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/opportunities" element={<OpportunityPage />} />
+      <Route path="/eligibility" element={<EligibilityPage />} />
       <Route path="/calendar" element={<CalendarPage />} />
 
       {/* PDF upload route */}
@@ -870,93 +1350,5 @@ export default function App() {
       <Route path="/signup" element={<Auth signup />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
-  );
-}
-
-function PdfUploadPage() {
-  const [file, setFile] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [result, setResult] = useState(null);
-
-  async function handleUpload() {
-    if (!file) {
-      setError("Please select a PDF file first.");
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-    setResult(null);
-
-    try {
-      const data = await uploadOpportunityPdf(file);
-      setResult(data);
-    } catch (err) {
-      setError(err.message || "PDF upload failed.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <Shell>
-      <div className="page">
-        <h1>Import Opportunity from PDF</h1>
-        <p>
-          Upload a scholarship, internship, or other opportunity PDF.
-          Nexora will extract its details using AI.
-        </p>
-
-        <div className="card" style={{ padding: 24, marginTop: 24 }}>
-          <input
-            type="file"
-            accept=".pdf,application/pdf"
-            onChange={(event) => {
-              setFile(event.target.files?.[0] || null);
-              setError("");
-              setResult(null);
-            }}
-          />
-
-          {file && (
-            <p style={{ marginTop: 12 }}>
-              Selected file: <strong>{file.name}</strong>
-            </p>
-          )}
-
-          <button
-            type="button"
-            onClick={handleUpload}
-            disabled={!file || loading}
-            style={{ marginTop: 16 }}
-          >
-            {loading ? "Extracting details..." : "Upload and Extract"}
-          </button>
-
-          {error && (
-            <p style={{ color: "red", marginTop: 16 }}>{error}</p>
-          )}
-
-          {result && (
-            <div style={{ marginTop: 24 }}>
-              <h2>Extracted Details</h2>
-              <pre
-                style={{
-                  whiteSpace: "pre-wrap",
-                  overflowWrap: "anywhere",
-                  padding: 16,
-                  borderRadius: 8,
-                  background: "#f3f4f6",
-                  color: "#111827",
-                }}
-              >
-                {JSON.stringify(result, null, 2)}
-              </pre>
-            </div>
-          )}
-        </div>
-      </div>
-    </Shell>
   );
 }

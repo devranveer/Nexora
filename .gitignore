@@ -19,3 +19,7 @@ dist/
 # Test and tool caches
 .pytest_cache/
 .mypy_cache/
+
+# Local databases (SQLite runs should never be committed)
+*.db
+*.sqlite3
