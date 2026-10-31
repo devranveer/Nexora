@@ -1,8 +1,8 @@
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { checkEligibility, getMyProfile } from "./api.js";
+import { checkEligibility, getMyProfile, parseResume } from "./api.js";
 
 const CATEGORY_OPTIONS = [
   { label: "Internships", value: "internship" },
@@ -54,7 +54,10 @@ export default function EligibilityChecker() {
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
-  const [checked, setChecked] = useState(null); // { category, totals, results }
+  const [checked, setChecked] = useState(null); // { totalChecked, totals, results, scope }
+  const [resumeState, setResumeState] = useState(null); // { parsing, parsed, error }
+
+  const resumeInputRef = useRef(null);
 
   // Prefill from the saved backend profile (falls back silently).
   useEffect(() => {
@@ -90,13 +93,13 @@ export default function EligibilityChecker() {
     return Number.isFinite(parsed) ? parsed : null;
   }
 
-  async function run(event) {
-    event.preventDefault();
+  // Runs the backend matcher for one or more categories and merges the results.
+  async function runCheck(categories) {
     setError("");
     setChecking(true);
+    setChecked(null);
 
-    const payload = {
-      category: form.category,
+    const payloadBase = {
       degree: form.degree,
       year_of_study: form.year_of_study,
       marks_percentage: numberOrNull(form.marks_percentage),
@@ -115,9 +118,20 @@ export default function EligibilityChecker() {
     };
 
     try {
-      const data = await checkEligibility(payload);
+      const bundles = await Promise.all(
+        categories.map(async (category) => ({
+          data: await checkEligibility({ ...payloadBase, category }),
+          category,
+        }))
+      );
 
-      const results = (data.results || [])
+      const results = bundles
+        .flatMap((bundle) =>
+          (bundle.data.results || []).map((result) => ({
+            ...result,
+            check_category: bundle.category,
+          }))
+        )
         .filter((r) => r.match_status !== undefined)
         .sort(
           (a, b) =>
@@ -130,12 +144,21 @@ export default function EligibilityChecker() {
         {}
       );
 
+      const totalChecked = bundles.reduce(
+        (sum, bundle) => sum + (bundle.data.total_opportunities_checked || 0),
+        0
+      );
+
+      const scope =
+        categories.length === 1
+          ? CATEGORY_OPTIONS.find((c) => c.value === categories[0])?.label
+          : categories.map((c) => `${c}s`).join(" + ");
+
       setChecked({
-        category: data.category,
-        totalChecked: data.total_opportunities_checked,
+        scope,
+        totalChecked,
         totals,
         results,
-        note: data.note,
       });
     } catch (err) {
       setError(
@@ -145,6 +168,69 @@ export default function EligibilityChecker() {
     } finally {
       setChecking(false);
     }
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    await runCheck([form.category]);
+  }
+
+  // ------------------------------------------------------------
+  // Resume upload: parse → prefill → auto-check internships+jobs
+  // ------------------------------------------------------------
+
+  function selectResume(event) {
+    const file = event.target.files?.[0];
+
+    if (!file) return;
+
+    setResumeState(null);
+
+    (async () => {
+      setResumeState({ parsing: true });
+
+      try {
+        const result = await parseResume(file);
+        const parsed = result.parsed || {};
+        const saved = result.profile || {};
+
+        setForm((previous) => ({
+          ...previous,
+          degree: parsed.degree || previous.degree,
+          year_of_study: parsed.year_of_study || saved.year_of_study || previous.year_of_study,
+          marks_percentage:
+            parsed.marks_percentage != null
+              ? String(parsed.marks_percentage)
+              : previous.marks_percentage,
+          annual_family_income:
+            parsed.annual_family_income != null
+              ? String(parsed.annual_family_income)
+              : previous.annual_family_income,
+          skills: (parsed.skills || []).join(", ") || previous.skills,
+          location: parsed.state_domicile || saved.preferred_location || previous.location,
+        }));
+
+        setResumeState({
+          parsing: false,
+          parsed: true,
+          summary: {
+            name: parsed.name,
+            college: parsed.college,
+            skills: parsed.skills || [],
+          },
+        });
+
+        // Immediately show opportunities based on the resume.
+        await runCheck(["internship", "job"]);
+      } catch (err) {
+        setResumeState({
+          parsing: false,
+          error: err.message || "Resume parsing failed.",
+        });
+      } finally {
+        if (resumeInputRef.current) resumeInputRef.current.value = "";
+      }
+    })();
   }
 
   const summary = checked
@@ -162,19 +248,30 @@ export default function EligibilityChecker() {
           <div className="eyebrow">ELIGIBILITY CHECKER</div>
           <h1 className="h1">Do you match these opportunities?</h1>
           <p className="subtitle">
-            Preliminary, rule-based matching only. Always confirm the official
+            Upload your resume or fill the form — Nexora saves your details and
+            shows matching opportunities. Always confirm the official
             notification before applying.
           </p>
         </div>
       </div>
 
+      <ResumeUploadPanel
+        state={resumeState}
+        inputRef={resumeInputRef}
+        onSelect={selectResume}
+      />
+
       <div className="form-wrap">
-        <form className="form-panel" onSubmit={run}>
-          <h2 className="form-title">Your details</h2>
+        <form className="form-panel" onSubmit={submit}>
+          <h2 className="form-title">
+            {resumeState?.parsed ? "Details parsed from your resume" : "Your details"}
+          </h2>
           <p className="panel-sub">
             {loading
               ? "Loading your saved profile..."
-              : "Prefilled from your profile where available."}
+              : resumeState?.parsed
+                ? "Review and edit anything, then check again."
+                : "Prefilled from your profile where available. Or upload your resume above."}
           </p>
 
           <div className="form-grid">
@@ -251,27 +348,91 @@ export default function EligibilityChecker() {
                 </div>
                 <div className="stat-number">{count}</div>
                 <div className="stat-note">
-                  of {checked.totalChecked} {checked.category} listings checked
+                  of {checked.totalChecked} listings · {checked.scope}
                 </div>
               </div>
             ))}
           </div>
 
+          {checking && <p className="panel-sub">Checking your profile...</p>}
+
           {checked.results.length ? (
             checked.results.map((result) => (
-              <ResultCard key={result.id} result={result} />
+              <ResultCard key={`${result.check_category}-${result.id}`} result={result} />
             ))
           ) : (
             <div className="empty" style={{ marginTop: 18 }}>
-              <strong>No {checked.category} opportunities in the database</strong>
+              <strong>No opportunities found in the database</strong>
               Open the Explore page and import real opportunities first.
             </div>
           )}
 
-          {checked.note && <p className="footer-note">{checked.note}</p>}
+          <p className="footer-note">
+            Preliminary, rule-based matching only — not confirmation of
+            eligibility. Verify the original notification before applying.
+          </p>
         </>
       )}
     </div>
+  );
+}
+
+// ------------------------------------------------------------
+// Resume upload panel
+// ------------------------------------------------------------
+
+function ResumeUploadPanel({ state, inputRef, onSelect }) {
+  return (
+    <section className="panel" style={{ marginTop: 4 }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 14,
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <div>
+          <h2 style={{ fontSize: 18 }}>📄 Fast way: upload your resume</h2>
+          <p className="panel-sub">
+            Nexora reads your skills, degree, marks, income and location, saves
+            them to your profile, and instantly shows matching internships and
+            jobs.
+          </p>
+        </div>
+
+        <label className="btn btn-primary" style={{ cursor: "pointer" }}>
+          {state?.parsing ? "Reading your resume..." : "Upload resume ↗"}
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".pdf,.docx,.txt,.md"
+            onChange={onSelect}
+            disabled={state?.parsing}
+            style={{ display: "none" }}
+          />
+        </label>
+      </div>
+
+      {state?.error && (
+        <div className="notice" role="alert" style={{ marginTop: 12 }}>
+          {state.error}
+        </div>
+      )}
+
+      {state?.parsed && (
+        <div className="notice" style={{ marginTop: 12 }}>
+          ✓ Resume parsed
+          {state.summary?.name ? ` — ${state.summary.name}` : ""}
+          {state.summary?.college ? ` · ${state.summary.college}` : ""}
+          {(state.summary?.skills || []).length
+            ? ` · Skills found: ${state.summary.skills.slice(0, 6).join(", ")}`
+            : ""}
+          . Saved to your profile.
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -289,6 +450,13 @@ function ResultCard({ result }) {
           </div>
         </div>
         <span className={`pill ${meta.tone}`}>{meta.label}</span>
+      </div>
+
+      <div className="tag-row">
+        {result.check_category && (
+          <span className="pill">{result.check_category}</span>
+        )}
+        {result.verified && <span className="pill green">✓ Verified</span>}
       </div>
 
       <div className="meta">

@@ -50,7 +50,7 @@ def extract_pdf_text(data: bytes) -> str:
         ) from exc
 
     try:
-        pages_text = [page.get_text(" ", strip=True) for page in doc]
+        pages_text = [page.get_text() for page in doc]
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=400,

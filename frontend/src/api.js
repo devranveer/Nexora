@@ -139,6 +139,31 @@ export async function getMyProfile() {
   return result.profile || {};
 }
 
+// Upload a resume (PDF/DOCX/TXT): parses details and updates
+// the stored profile. Returns { parsed, profile }.
+export async function parseResume(file) {
+  if (!file) {
+    throw new Error("Please select a resume file.");
+  }
+
+  const allowed = [".pdf", ".docx", ".txt", ".md"];
+  if (!allowed.some((ext) => file.name.toLowerCase().endsWith(ext))) {
+    throw new Error("Please upload a PDF, DOCX or TXT resume.");
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return apiRequest(
+    "/profile/parse-resume",
+    {
+      method: "POST",
+      body: formData,
+    },
+    0
+  );
+}
+
 // Create or update the student profile.
 export async function saveMyProfile(payload) {
   return apiRequest(
