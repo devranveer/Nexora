@@ -51,6 +51,20 @@ INTERNSHIP_KEYWORDS = [
     "placement year", "co-op",
 ]
 
+# German gender markers like (m/w/d) or (x/f/m) are required by
+# German law but are pure noise for our UI.
+GENDER_MARKER_RE = re.compile(
+    r"[([{]?\s*[xmfwd]\s*[/|]\s*[xmfwd]\s*[/|]\s*[xmfwd]\s*[)\]]?",
+    re.IGNORECASE,
+)
+
+
+def strip_gender_marker(title: str) -> str:
+    """Remove '(m/w/d)'-style gender markers from job titles."""
+    cleaned = GENDER_MARKER_RE.sub("", title or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or (title or "").strip()
+
 
 def clean_text(value) -> str | None:
     """Collapse whitespace and strip HTML entities."""
@@ -173,6 +187,7 @@ def fetch_remotive(db: Session, limit: int) -> int:
             continue
 
         title = clean_text(job.get("title")) or "Untitled opening"
+        title = strip_gender_marker(title)
         category = classify_category(
             title,
             [job.get("category")],
@@ -261,6 +276,7 @@ def fetch_arbeitnow(db: Session, limit: int, pages: int = 3) -> int:
                 continue
 
             title = clean_text(entry.get("title")) or "Untitled opening"
+            title = strip_gender_marker(title)
             tags = list(entry.get("tags") or []) + list(
                 entry.get("job_types") or []
             )

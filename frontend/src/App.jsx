@@ -11,6 +11,7 @@ import {
 import Calendar from "./Calendar";
 import PdfUpload from "./PdfUpload.jsx";
 import EligibilityChecker from "./EligibilityChecker.jsx";
+import ProfileMatch from "./ProfileMatch.jsx";
 import {
   opportunities,
   categories,
@@ -28,6 +29,8 @@ import {
 } from "./api.js";
 
 // Convert backend data into the format used by the Nexora UI.
+const GENDER_MARKER = /[([]?\s*[xmfwd]\s*[/|]\s*[xmfwd]\s*[/|]\s*[xmfwd]\s*[)\]]?/gi;
+
 function normalizeOpportunity(item) {
   const categoryMap = {
     scholarship: "Scholarship",
@@ -96,7 +99,9 @@ function normalizeOpportunity(item) {
 
   return {
     id: String(item.id),
-    title: item.title || "Untitled opportunity",
+    rawCategory: String(item.category || "").toLowerCase(),
+    rawTitle: item.title || "Untitled opportunity",
+    title: (item.title || "Untitled opportunity").replace(GENDER_MARKER, "").replace(/\s{2,}/g, " ").trim() || (item.title || "Untitled opportunity"),
     org: item.organization || "Organization not specified",
     category,
     icon: iconMap[category] || "✨",
@@ -1058,6 +1063,8 @@ function Detail() {
               </div>
             </>
           )}
+
+          <ProfileMatch item={item} />
 
           <h3>Before you apply</h3>
           <ul className="detail-body">
