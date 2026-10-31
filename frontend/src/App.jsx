@@ -102,6 +102,7 @@ function Sidebar() {
     ["/opportunities", "⌕", "Explore opportunities"],
     ["/saved", "♡", "Saved"],
     ["/calendar", "▦", "Calendar"],
+    ["/upload-pdf", "⇧", "Import PDF"],
     ["/profile", "◉", "My profile"],
   ];
 
@@ -835,11 +836,104 @@ export default function App() {
       <Route path="/calendar" element={<CalendarPage />} />
       <Route path="/opportunity/:id" element={<Detail />} />
       <Route path="/saved" element={<Saved />} />
+
+      {/* ADD THIS LINE */}
+      <Route path="/upload-pdf" element={<PdfUploadPage />} />
+
       <Route path="/profile" element={<Profile />} />
       <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/login" element={<Auth />} />
       <Route path="/signup" element={<Auth signup />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
+  );
+}
+
+
+function PdfUploadPage() {
+  const [file, setFile] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+
+  async function handleUpload() {
+    if (!file) {
+      setError("Please select a PDF file first.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setResult(null);
+
+    try {
+      const data = await uploadOpportunityPdf(file);
+      setResult(data);
+    } catch (err) {
+      setError(err.message || "PDF upload failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Shell>
+      <div className="page">
+        <h1>Import Opportunity from PDF</h1>
+        <p>
+          Upload a scholarship, internship, or other opportunity PDF.
+          Nexora will extract its details using AI.
+        </p>
+
+        <div className="card" style={{ padding: 24, marginTop: 24 }}>
+          <input
+            type="file"
+            accept=".pdf,application/pdf"
+            onChange={(event) => {
+              setFile(event.target.files?.[0] || null);
+              setError("");
+              setResult(null);
+            }}
+          />
+
+          {file && (
+            <p style={{ marginTop: 12 }}>
+              Selected file: <strong>{file.name}</strong>
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={handleUpload}
+            disabled={!file || loading}
+            style={{ marginTop: 16 }}
+          >
+            {loading ? "Extracting details..." : "Upload and Extract"}
+          </button>
+
+          {error && (
+            <p style={{ color: "red", marginTop: 16 }}>{error}</p>
+          )}
+
+          {result && (
+            <div style={{ marginTop: 24 }}>
+              <h2>Extracted Details</h2>
+              <pre
+                style={{
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                  padding: 16,
+                  borderRadius: 8,
+                  background: "#f3f4f6",
+                  color: "#111827",
+                }}
+              >
+                {JSON.stringify(result, null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
+    </Shell>
   );
 }

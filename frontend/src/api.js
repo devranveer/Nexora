@@ -119,3 +119,17 @@ export async function uploadOpportunityPdf(file) {
 
 // Export the configured backend URL.
 export { API_BASE };
+
+export async function uploadOpportunityPdf(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return apiRequest(
+    "/ai/extract-pdf",
+    {
+      method: "POST",
+      body: formData,
+    },
+    0
+  );
+}
