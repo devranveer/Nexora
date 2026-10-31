@@ -16,6 +16,8 @@ app = FastAPI(title="Aventra API")
 
 # 2. Configure CORS for your Vite frontend (localhost:5173)
 origins = [
+        "https://nexora-six-rho-36.vercel.app",
+
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
