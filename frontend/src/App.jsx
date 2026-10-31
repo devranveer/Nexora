@@ -66,8 +66,33 @@ function normalizeOpportunity(item) {
   };
 
   const skills = Array.isArray(item.required_skills)
-    ? item.required_skills.slice(0, 6)
+    ? item.required_skills.slice(0, 8)
     : [];
+
+  const capWords = (value) =>
+    String(value).replace(/^\w/, (c) => c.toUpperCase());
+
+  // "2026-12-15" → { days: 42, label: "42 days left" } | null
+  function deadlineCountdown(deadline) {
+    const match = String(deadline || "").match(/^\d{4}-\d{2}-\d{2}/);
+    if (!match) return null;
+    const target = new Date(match[0]);
+    if (Number.isNaN(target.getTime())) return null;
+    const days = Math.ceil(
+      (target - new Date()) / (1000 * 60 * 60 * 24)
+    );
+    if (days < 0) return { label: `Closed ${Math.abs(days)} days ago`, tone: "orange" };
+    if (days === 0) return { label: "Closes today", tone: "orange" };
+    return {
+      label: `${days} day${days === 1 ? "" : "s"} left`,
+      tone: days <= 7 ? "orange" : "green",
+    };
+  }
+
+  const eligibility =
+    item.eligibility && typeof item.eligibility === "object"
+      ? item.eligibility
+      : {};
 
   return {
     id: String(item.id),
@@ -79,8 +104,9 @@ function normalizeOpportunity(item) {
     amount,
     location: item.location || item.work_mode || "See listing details",
     deadline: item.deadline || "Not specified",
+    deadlineCountdown: deadlineCountdown(item.deadline),
     level: item.work_mode
-      ? String(item.work_mode).replace(/\b\w/g, (c) => c.toUpperCase())
+      ? capWords(item.work_mode)
       : "Check eligibility",
     description:
       item.description
@@ -90,6 +116,18 @@ function normalizeOpportunity(item) {
     tags: [category, ...skills.filter(Boolean)],
     url,
     verified: item.verified ?? false,
+    // Extra real fields used by the detail-page checklist.
+    workMode: item.work_mode ? capWords(item.work_mode) : null,
+    stipend: item.stipend_monthly || null,
+    salary: item.salary_annual || null,
+    durationMonths: item.duration_months || null,
+    prize:
+      eligibility.prize_amount_usd
+        ? `₹${Number(eligibility.prize_amount_usd).toLocaleString()}`
+        : null,
+    skills: skills.filter(Boolean),
+    marksRequired: eligibility.minimum_marks ?? null,
+    incomeCap: eligibility.maximum_family_income ?? null,
   };
 }
 
@@ -801,13 +839,81 @@ function ProfileMeter() {
   );
 }
 
-function Activity({ icon, title, text }) {
+// Checklist rows for the detail sidebar. Only rows with real
+// data are shown, so nothing displays vague placeholders.
+function buildQuickChecklist(item) {
+  const rows = [];
+
+  if (item.location) {
+    rows.push(["⌖", "Location", item.location]);
+  }
+
+  if (item.workMode) {
+    rows.push(["◉", "Work mode", item.workMode]);
+  }
+
+  if (item.durationMonths) {
+    rows.push(["▦", "Duration", `${item.durationMonths} months`]);
+  }
+
+  if (item.salary) {
+    rows.push(["💰", "Annual salary", `₹${Number(item.salary).toLocaleString()} / yr`]);
+  } else if (item.stipend) {
+    rows.push(["💰", "Monthly stipend", `₹${Number(item.stipend).toLocaleString()} / mo`]);
+  } else if (item.prize) {
+    rows.push(["🏆", "Prize pool", item.prize]);
+  }
+
+  if (item.skills.length) {
+    rows.push(["⌁", "Skills", item.skills.join(", ")]);
+  }
+
+  if (item.marksRequired != null) {
+    rows.push(["✓", "Minimum marks", `${item.marksRequired}%`]);
+  }
+
+  if (item.incomeCap != null) {
+    rows.push(["✓", "Family income cap", `₹${Number(item.incomeCap).toLocaleString()} / yr`]);
+  }
+
+  if (item.deadlineCountdown) {
+    rows.push([
+      "◷",
+      "Time remaining",
+      item.deadlineCountdown.label,
+      item.deadlineCountdown.tone,
+    ]);
+  }
+
+  rows.push([
+    item.verified ? "✓" : "?",
+    "Verification",
+    item.verified
+      ? "Verified listing"
+      : "Not verified — check the official page",
+    item.verified ? "green" : "orange",
+  ]);
+
+  return rows;
+}
+
+function Activity({ icon, title, text, tone }) {
   return (
     <div className="activity">
       <div className="activity-icon">{icon}</div>
       <div>
         <strong>{title}</strong>
-        <span>{text}</span>
+        <span
+          style={
+            tone === "green"
+              ? { color: "#15803d" }
+              : tone === "orange"
+                ? { color: "#b45309" }
+                : undefined
+          }
+        >
+          {text}
+        </span>
       </div>
     </div>
   );
@@ -886,8 +992,43 @@ function Detail() {
 
           <div className="detail-facts">
             <div className="fact"><span>TYPE</span><strong>{item.type}</strong></div>
-            <div className="fact"><span>AMOUNT / STIPEND</span><strong>{item.amount}</strong></div>
-            <div className="fact"><span>DEADLINE</span><strong>{item.deadline}</strong></div>
+            <div className="fact">
+              <span>{item.salary ? "ANNUAL SALARY" : "MONTHLY STIPEND"}</span>
+              <strong>
+                {item.salary
+                  ? `₹${Number(item.salary).toLocaleString()} / yr`
+                  : item.stipend
+                    ? `₹${Number(item.stipend).toLocaleString()} / mo`
+                    : item.amount}
+              </strong>
+            </div>
+            <div className="fact">
+              <span>DEADLINE</span>
+              <strong>
+                {item.deadline}{" "}
+                {item.deadlineCountdown && (
+                  <span className={`pill ${item.deadlineCountdown.tone}`}>
+                    {item.deadlineCountdown.label}
+                  </span>
+                )}
+              </strong>
+            </div>
+            <div className="fact">
+              <span>WORK MODE</span>
+              <strong>{item.workMode || item.level}</strong>
+            </div>
+            {item.durationMonths && (
+              <div className="fact">
+                <span>DURATION</span>
+                <strong>{item.durationMonths} months</strong>
+              </div>
+            )}
+            {item.prize && (
+              <div className="fact">
+                <span>PRIZE POOL</span>
+                <strong>{item.prize}</strong>
+              </div>
+            )}
           </div>
 
           <h3>About this opportunity</h3>
@@ -895,8 +1036,28 @@ function Detail() {
 
           <h3>Required skills</h3>
           <p className="detail-body">
-            {item.tags.length > 1 ? item.tags.slice(1).join(", ") : "Not specified"}
+            {item.skills.length ? item.skills.join(", ") : "Not specified"}
           </p>
+
+          {(item.marksRequired != null || item.incomeCap != null) && (
+            <>
+              <h3>Eligibility gates</h3>
+              <div className="detail-facts">
+                {item.marksRequired != null && (
+                  <div className="fact">
+                    <span>MINIMUM MARKS</span>
+                    <strong>{item.marksRequired}%</strong>
+                  </div>
+                )}
+                {item.incomeCap != null && (
+                  <div className="fact">
+                    <span>FAMILY INCOME CAP</span>
+                    <strong>₹{Number(item.incomeCap).toLocaleString()} / yr</strong>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
 
           <h3>Before you apply</h3>
           <ul className="detail-body">
@@ -922,9 +1083,15 @@ function Detail() {
         <aside className="panel">
           <h3>Quick information</h3>
           <p className="panel-sub">Use this as a checklist.</p>
-          <Activity icon="⌖" title="Location" text={item.location} />
-          <Activity icon="◉" title="Work mode" text={item.level} />
-          <Activity icon="⌁" title="Tags" text={item.tags.join(", ")} />
+          {buildQuickChecklist(item).map(([icon, title, text, tone]) => (
+            <Activity
+              key={title + text}
+              icon={icon}
+              title={title}
+              text={text}
+              tone={tone}
+            />
+          ))}
         </aside>
       </div>
 

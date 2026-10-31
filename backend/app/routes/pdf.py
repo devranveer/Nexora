@@ -1,4 +1,6 @@
 
+import re
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -74,6 +76,140 @@ def extract_pdf_text(data: bytes) -> str:
     return text
 
 
+MONTH_RE = (
+    r"January|February|March|April|May|June|July|August|"
+    r"September|October|November|December"
+)
+
+
+def heuristic_extract(text: str) -> dict:
+    """
+    Rule-based fallback when the AI extraction returns no usable
+    title/category. Best effort only; unknown fields stay null.
+    """
+    from ai.resume_parser import TECH_SKILLS
+
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    lower = text.lower()
+
+    # Title: first meaningful line (skip generic headings).
+    title = ""
+    for line in lines[:6]:
+        if re.search(
+            r"^(application|motion|the |this |all |for |it is)",
+            line,
+            re.IGNORECASE,
+        ):
+            continue
+        if line and line[0].islower():
+            continue  # wrapped continuation of a previous sentence
+        title = line[:120]
+        break
+    if not title and lines:
+        title = lines[0][:120]
+
+    # Classification from keywords.
+    category = [c for c, word in [
+        ("scholarship", ["scholarship", "fellowship", "financial assistance", "grant"]),
+        ("internship", ["internship", "intern ", "trainee"]),
+        ("job", ["recruitment", "vacancy", "job opening", "position of"]),
+        ("fellowship", ["fellowship"]),
+    ] if any(w in lower for w in word)]
+    category = category[0] if category else "other"
+
+    # Organization from common label styles.
+    organization = None
+    org_match = re.search(
+        r"(?:organization|organisation|ministry|department|institute|"
+        r"university|company)\s*[:\-]\s*([^\n]{3,90})",
+        text,
+        re.IGNORECASE,
+    )
+    if org_match:
+        organization = org_match.group(1).strip()[:200]
+
+    # Deadline.
+    def clean_number(raw: str) -> float:
+        value = float(raw.replace(",", ""))
+        if value < 100 and ("lakh" in lower or "lpa" in lower):
+            value *= 100000
+        return value
+
+    deadline_match = re.search(r"\d{4}-\d{1,2}-\d{1,2}", text)
+    if not deadline_match:
+        deadline_match = re.search(
+            rf"(\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:{MONTH_RE})\s+\d{{4}})",
+            text,
+            re.IGNORECASE,
+        )
+    deadline = deadline_match.group(0) if deadline_match else None
+
+    # Money fields.
+    stipend = re.search(
+        r"stipend[^\d]{0,60}([\d,]+(?:\.\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    monthly_amount = (
+        clean_number(stipend.group(1)) if stipend else None
+    )
+    if monthly_amount is not None and not (500 < monthly_amount < 1_000_000):
+        monthly_amount = None
+
+    # Income cap and minimum marks.
+    income_match = re.search(
+        r"income[^\d]{0,60}([\d,]+(?:\.\d+)?)", text, re.IGNORECASE
+    )
+    eligibility = {}
+
+    minimum_marks = re.search(r"(\d{2})\s*(?:%|percent)", text, re.IGNORECASE)
+    if minimum_marks:
+        marks = float(minimum_marks.group(1))
+        if 40 <= marks <= 100:
+            eligibility["minimum_marks"] = marks
+
+    if income_match:
+        try:
+            income = clean_number(income_match.group(1))
+            if income >= 100000:
+                eligibility["maximum_family_income"] = income
+        except ValueError:
+            pass
+
+    skills = sorted(
+        skill.title() if len(skill) > 3 else skill.upper()
+        for skill in TECH_SKILLS
+        if re.search(r"\b" + re.escape(skill) + r"\b", lower)
+    )
+
+    # Eligible courses from common degree tokens.
+    eligible_courses = [
+        d for d in ["B.Tech", "B.E.", "B.Sc", "MCA", "BCA", "M.Tech", "M.Sc"]
+        if re.search(r"\b" + re.escape(d) + r"\b", text, re.IGNORECASE)
+    ]
+
+    return {
+        "title": title,
+        "category": category,
+        "organization": organization,
+        "description": text[:1200] or None,
+        "deadline": deadline,
+        "start_date": None,
+        "location": None,
+        "work_mode": None,
+        "duration_months": None,
+        "stipend_monthly": monthly_amount,
+        "salary_annual": None,
+        "minimum_experience_years": None,
+        "required_skills": skills,
+        "eligible_degrees": eligible_courses,
+        "eligible_years": [],
+        "eligibility": eligibility,
+        "required_documents": [],
+        "source_uncertainties": [],
+    }
+
+
 @router.post("/extract-pdf")
 async def extract_pdf(
     file: UploadFile = File(...),
@@ -102,8 +238,19 @@ async def extract_pdf(
 
         text = extract_pdf_text(data)
 
-        # AI extraction (returns plain dict of structured fields).
-        result = analyze_opportunity(text)
+        # Try AI extraction first; fall back to rule-based parsing
+        # so a quirky document never blocks the import entirely.
+        uncertainties = []
+        try:
+            result = analyze_opportunity(text)
+        except (ValueError, RuntimeError) as ai_exc:
+            result = heuristic_extract(text)
+            uncertainties = [
+                "AI extraction did not return usable data ("
+                + str(ai_exc)[:120]
+                + "). Extracted with built-in rules instead — "
+                "please verify every field manually."
+            ]
 
         # Avoid exact same-title duplicates when someone re-uploads
         # the same notification.
